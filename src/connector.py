@@ -1,5 +1,9 @@
 # region imports
 from dc_sdk import errors
+from psycopg2 import sql
+import logging
+import psycopg2
+import psycopg2.extras
 # end region imports
 
 # region class
@@ -127,37 +131,83 @@ class Connector:
         raise errors.NotImplementedError()
     # end region get_data
     # region load_data
-    def load_data(self, data, object_id, m, update_method, batch_number: int, total_batches: int):
-        """
-        DESTINATION ONLY FUNCTION
-        :param update_method: int flag to show whether the data should be appended or added as a new table,
-            0: append -> add the new data to the end of the table without changing the existing data
-            1: replace -> remove the old data, insert the new data
-            2: upsert -> the data overwrite existing data, currently not supported
-        :param data: the data pulled from the source's get_data() function,
-            formatted as an list of dicts where each dict is a row
-                [{field_ids[1]: <value string in 1st row, 1st column>,
-                field_ids[2]: <value string in 1st row, 2nd column>, ...},
-                {field_ids[1]: <value string in 2nd row, 1st column>,
-                field_ids[2]: <value string in 2nd row, 2nd column>, ...},
-                ...
-                {field_ids[N]: <value string in Nth row, first column>, ...}]
-        :param object_id: the unique id string of the object returned from get_objects()
-        :param m: a list of dicts, used to map all the data in the source column to the destination column name.
-            basically, the source column's name will change to that of the destination column,
-            but the data in that column will not change
-            formatted as a list of dicts, where each dict represents a column
-                [{'source_field_id': <value of source column's id>,
-                'destination_field_id': <value of the destination column>,
-                'datatype': '<datatype of the source column>',
-                'size': '<size>' }, ... ]
-        :param batch_number: an int indicating what batch the connector is on.
-        :param total_batches: an int indicating how many batches the connector will have to load in total.
-        :return: a boolean to indicate the success of the process
-        """
-
-        # This is the default if the connector is not a destination
-        raise errors.NotADestinationError()
+    # Required imports
+    
+    # Inside class
+    
+    def load_data(self, data, object_id, m, update_method, batch_number, total_batches, primary_key=None):
+        # Initialize cursor
+        cursor = self.connection.cursor()
+    
+        # Generate column and value strings for SQL query
+        columns, values = self._generate_columns_values(m, data)
+    
+        try:
+            # Append new rows to the table
+            if update_method == 0:
+                logging.info(f'Appending data to {object_id}...')
+                self._append_data(cursor, object_id, columns, values, data)
+    
+            # Replace existing rows in the table
+            elif update_method == 1:
+                logging.info(f'Replacing data in {object_id}...')
+                self._replace_data(cursor, object_id, columns, values, data)
+    
+            # Upsert rows into the table
+            elif update_method == 2:
+                if not primary_key:
+                    raise ValueError('Primary key is required for upsert operations')
+                logging.info(f'Upserting data into {object_id}...')
+                self._upsert_data(cursor, object_id, columns, values, data, primary_key)
+    
+            # Commit the transaction
+            self.connection.commit()
+    
+            logging.info(f'Successfully loaded data into {object_id}')
+            return True
+    
+        except Exception as e:
+            # Rollback the transaction and log the error
+            self.connection.rollback()
+            logging.error(f'Failed to load data into {object_id}. Error: {str(e)}')
+            raise LoadDataError(f'Failed to load data into {object_id}. Error: {str(e)}')
+    
+        finally:
+            cursor.close()
+    
+    
+    def _generate_columns_values(self, m, data):
+        columns = ', '.join([d['column'] for d in m])
+        values = ', '.join(['%s' for _ in m])
+        return columns, values
+    
+    
+    def _append_data(self, cursor, object_id, columns, values, data):
+        insert_sql = sql.SQL('INSERT INTO {} ({}) VALUES ({})').format(
+            sql.Identifier(object_id),
+            sql.SQL(columns),
+            sql.SQL(values)
+        )
+        psycopg2.extras.execute_batch(cursor, insert_sql, data)
+    
+    
+    def _replace_data(self, cursor, object_id, columns, values, data):
+        cursor.execute(f'TRUNCATE TABLE {object_id}')
+        self._append_data(cursor, object_id, columns, values, data)
+    
+    
+    def _upsert_data(self, cursor, object_id, columns, values, data, primary_key):
+        insert_sql = sql.SQL('INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET').format(
+            sql.Identifier(object_id),
+            sql.SQL(columns),
+            sql.SQL(values),
+            sql.SQL(', '.join(primary_key))
+        )
+        psycopg2.extras.execute_batch(cursor, insert_sql, data)
+    
+    
+    class LoadDataError(Exception):
+        pass
     # end region load_data
     # region other_functions
     # end region other_functions
