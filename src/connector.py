@@ -85,31 +85,26 @@ class Connector:
     # end region get_metadata
     # region get_objects
     def get_objects(self):
-        api_base_url = "https://api.hubapi.com/crm/v3/objects"
+        api_base_url = 'https://api.hubapi.com'
         headers = {
-            "Authorization": f"Bearer {self.credentials['access_token']}",
-            "Content-Type": "application/json"
+            'Authorization': f'Bearer {self.credentials["access_token"]}',
+            'Content-Type': 'application/json'
         }
-    
+        endpoint = f'{api_base_url}/crm/v3/objects'
         objects = []
         try:
-            response = requests.get(api_base_url, headers=headers)
+            response = requests.get(endpoint, headers=headers)
             response.raise_for_status()
             data = response.json()
-    
             for item in data['results']:
-                obj = {
-                    "object_id": item['id'],
-                    "object_name": item['properties']['name'],
-                    "object_label": item['properties']['label'],
-                    "object_group": item['properties']['group']
-                }
-                objects.append(obj)
-        except requests.exceptions.HTTPError as err:
-            print(f"HTTP error occurred: {err}")
-        except Exception as err:
-            print(f"An error occurred: {err}")
-    
+                objects.append({
+                    'object_id': item['id'],
+                    'object_name': item['properties']['name'],
+                    'object_label': item['properties']['label'],
+                    'object_group': item['properties']['group']
+                })
+        except requests.exceptions.RequestException as e:
+            print(f'Error: {e}')
         return objects
     # end region get_objects
     # region get_fields
