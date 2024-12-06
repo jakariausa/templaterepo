@@ -2,6 +2,7 @@
 from dc_sdk import errors
 import json
 import requests
+import urllib.parse
 # end region imports
 
 # region class
@@ -108,24 +109,33 @@ class Connector:
         return objects
     # end region get_objects
     # region get_fields
-    def get_fields(self, object_id, options=dict()):
-        """
-        returns a list of all fields (columns) connected to the specified object (table)
-        :param object_id: one of the object_id's returned by the get_objects() function
-        :return: a list of dictionaries, where each dictionary contains information about a field
-        [
-            {
-                field_id: <field_id>,
-                field_name: <field_name>,
-                field_label: <field_label>,
-                data_type: <data_type>,
-                size: <size>
-            },
-            {...},
-            ...
-        ]
-        """
-        raise errors.NotImplementedError()
+    def get_fields(self, object_id):
+        api_base_url = 'https://api.hubapi.com/crm/v3/schemas'
+        object_id = urllib.parse.quote_plus(object_id)
+        url = f'{api_base_url}/{object_id}/fields'
+        headers = {'Authorization': f'Bearer {self.credentials["access_token"]}'}
+    
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as err:
+            print(f'HTTP error occurred: {err}')
+            return None
+        except Exception as err:
+            print(f'Other error occurred: {err}')
+            return None
+    
+        fields = []
+        for field in response.json()['results']:
+            fields.append({
+                'field_id': field['id'],
+                'field_name': field['name'],
+                'field_label': field['label'],
+                'data_type': field['dataType'],
+                'size': field.get('size')  # Some fields might not have a size.
+            })
+    
+        return fields
     # end region get_fields
     # region determine_batch_size
     def determine_batch_size(self, object_id, field_ids, filters=None):
