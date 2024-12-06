@@ -85,26 +85,31 @@ class Connector:
     # end region get_metadata
     # region get_objects
     def get_objects(self):
-        """
-        returns a list of all objects connected to the user's account,
-            where object refers to the container of data, whether that is a table, spreadsheet, Salesforce object, etc.
-        :return: a list of dictionaries, where each dictionary contains information about the object
-            [
-                {
-                    object_id: <object_id>,
-                    object_name: <object_name>,
-                    object_label: <object_label>,
-                    object_group: <object_group>
-                },
-                {...},
-                ...
-            ]
-            object_id: the unique identifier of the object. It's what the connector uses to access the object.
-            object_name: the actual name of the object. if the object_name is None,
-                the frontend will only display the object_label
-            object_label: what should be displayed by the frontend.
-        """
-        raise errors.NotImplementedError()
+        url = 'https://api.hubapi.com/objects/v1/objects'
+        headers = {'Authorization': 'Bearer ' + self.credentials['access_token']}
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as errh:
+            print ("Http Error:",errh)
+        except requests.exceptions.ConnectionError as errc:
+            print ("Error Connecting:",errc)
+        except requests.exceptions.Timeout as errt:
+            print ("Timeout Error:",errt)
+        except requests.exceptions.RequestException as err:
+            print ("Something went wrong",err)
+    
+        objects = []
+        for obj in response.json():
+            objects.append({
+                'object_id': obj['id'],
+                'object_name': obj['name'],
+                'object_label': obj['label'],
+                'object_group': obj['group']
+            })
+    
+        return objects
     # end region get_objects
     # region get_fields
     def get_fields(self, object_id, options=dict()):
