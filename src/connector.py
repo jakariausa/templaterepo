@@ -85,29 +85,30 @@ class Connector:
     # end region get_metadata
     # region get_objects
     def get_objects(self):
-        url = 'https://api.hubapi.com/objects/v1/objects'
-        headers = {'Authorization': 'Bearer ' + self.credentials['access_token']}
-        
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as errh:
-            print ("Http Error:",errh)
-        except requests.exceptions.ConnectionError as errc:
-            print ("Error Connecting:",errc)
-        except requests.exceptions.Timeout as errt:
-            print ("Timeout Error:",errt)
-        except requests.exceptions.RequestException as err:
-            print ("Something went wrong",err)
+        api_base_url = "https://api.hubapi.com/crm/v3/objects"
+        headers = {
+            "Authorization": f"Bearer {self.credentials['access_token']}",
+            "Content-Type": "application/json"
+        }
     
         objects = []
-        for obj in response.json():
-            objects.append({
-                'object_id': obj['id'],
-                'object_name': obj['name'],
-                'object_label': obj['label'],
-                'object_group': obj['group']
-            })
+        try:
+            response = requests.get(api_base_url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+    
+            for item in data['results']:
+                obj = {
+                    "object_id": item['id'],
+                    "object_name": item['properties']['name'],
+                    "object_label": item['properties']['label'],
+                    "object_group": item['properties']['group']
+                }
+                objects.append(obj)
+        except requests.exceptions.HTTPError as err:
+            print(f"HTTP error occurred: {err}")
+        except Exception as err:
+            print(f"An error occurred: {err}")
     
         return objects
     # end region get_objects
