@@ -1,6 +1,9 @@
 # region imports
 from dc_sdk import errors
+from psycopg2 import sql
+from psycopg2.extras import execute_values
 import json
+import psycopg2
 import requests
 import urllib.parse
 # end region imports
@@ -196,37 +199,61 @@ class Connector:
         raise errors.NotImplementedError()
     # end region get_data
     # region load_data
-    def load_data(self, data, object_id, m, update_method, batch_number: int, total_batches: int):
-        """
-        DESTINATION ONLY FUNCTION
-        :param update_method: int flag to show whether the data should be appended or added as a new table,
-            0: append -> add the new data to the end of the table without changing the existing data
-            1: replace -> remove the old data, insert the new data
-            2: upsert -> the data overwrite existing data, currently not supported
-        :param data: the data pulled from the source's get_data() function,
-            formatted as an list of dicts where each dict is a row
-                [{field_ids[1]: <value string in 1st row, 1st column>,
-                field_ids[2]: <value string in 1st row, 2nd column>, ...},
-                {field_ids[1]: <value string in 2nd row, 1st column>,
-                field_ids[2]: <value string in 2nd row, 2nd column>, ...},
-                ...
-                {field_ids[N]: <value string in Nth row, first column>, ...}]
-        :param object_id: the unique id string of the object returned from get_objects()
-        :param m: a list of dicts, used to map all the data in the source column to the destination column name.
-            basically, the source column's name will change to that of the destination column,
-            but the data in that column will not change
-            formatted as a list of dicts, where each dict represents a column
-                [{'source_field_id': <value of source column's id>,
-                'destination_field_id': <value of the destination column>,
-                'datatype': '<datatype of the source column>',
-                'size': '<size>' }, ... ]
-        :param batch_number: an int indicating what batch the connector is on.
-        :param total_batches: an int indicating how many batches the connector will have to load in total.
-        :return: a boolean to indicate the success of the process
-        """
-
-        # This is the default if the connector is not a destination
-        raise errors.NotADestinationError()
+    def load_data(self, data, object_id, m, update_method, batch_number, total_batches):
+        # Establish connection
+        conn = psycopg2.connect(self.api_base_url)
+        cur = conn.cursor()
+        
+        try:
+            # Check if table exists for the first batch
+            if batch_number == 0:
+                cur.execute(f"SELECT to_regclass('{object_id}')")
+                if cur.fetchone()[0] is None:
+                    print(f"Table {object_id} does not exist. Creating it now.")
+                    # Create table based on mapping
+                    create_query = "CREATE TABLE {} (".format(object_id)
+                    for column in m:
+                        create_query += "{} {}({}), ".format(column["destination_field_id"], column["datatype"], column["size"])
+                    create_query = create_query.rstrip(", ") + ")"
+                    cur.execute(create_query)
+                    print(f"Table {object_id} created successfully.")
+            
+            # Prepare data for insertion
+            insert_data = [tuple(row.values()) for row in data]
+    
+            # Generate insert query
+            insert_query = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
+                sql.Identifier(object_id),
+                sql.SQL(',').join(map(sql.Identifier, [col["destination_field_id"] for col in m]))
+            )
+    
+            # Handle update methods
+            if update_method == 0:  # Append
+                execute_values(cur, insert_query, insert_data)
+                print(f"Data appended to {object_id} successfully.")
+            elif update_method == 1:  # Replace
+                cur.execute(f"DELETE FROM {object_id}")
+                execute_values(cur, insert_query, insert_data)
+                print(f"Data in {object_id} replaced successfully.")
+            elif update_method == 2:  # Upsert
+                raise Exception("Upsert operation not supported by PostgreSQL.")
+            else:
+                raise ValueError("Invalid update_method. Expected 0 (Append), 1 (Replace), or 2 (Upsert).")
+    
+            # Commit transaction
+            conn.commit()
+    
+        except Exception as e:
+            # Rollback in case of error
+            conn.rollback()
+            raise Exception("An error occurred while loading data: " + str(e))
+    
+        finally:
+            # Close cursor and connection
+            cur.close()
+            conn.close()
+    
+        print(f"Batch {batch_number+1} of {total_batches} loaded successfully.")
     # end region load_data
     # region other_functions
     # end region other_functions
