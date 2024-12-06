@@ -86,27 +86,39 @@ class Connector:
     # end region get_metadata
     # region get_objects
     def get_objects(self):
-        api_base_url = 'https://api.hubapi.com'
+        access_token = self.credentials['access_token']
         headers = {
-            'Authorization': f'Bearer {self.credentials["access_token"]}',
+            'Authorization': 'Bearer ' + access_token,
             'Content-Type': 'application/json'
         }
-        endpoint = f'{api_base_url}/crm/v3/objects'
-        objects = []
+        url = 'https://api.hubapi.com/crm/v3/objects'
+    
         try:
-            response = requests.get(endpoint, headers=headers)
+            response = requests.get(url, headers=headers)
             response.raise_for_status()
+    
             data = response.json()
+    
+            objects = []
             for item in data['results']:
-                objects.append({
+                obj = {
                     'object_id': item['id'],
                     'object_name': item['properties']['name'],
                     'object_label': item['properties']['label'],
                     'object_group': item['properties']['group']
-                })
-        except requests.exceptions.RequestException as e:
-            print(f'Error: {e}')
-        return objects
+                }
+                objects.append(obj)
+    
+            return objects
+    
+        except requests.exceptions.HTTPError as errh:
+            print ("HTTP Error:",errh)
+        except requests.exceptions.ConnectionError as errc:
+            print ("Error Connecting:",errc)
+        except requests.exceptions.Timeout as errt:
+            print ("Timeout Error:",errt)
+        except requests.exceptions.RequestException as err:
+            print ("Something went wrong",err)
     # end region get_objects
     # region get_fields
     def get_fields(self, object_id):
