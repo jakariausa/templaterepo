@@ -1,5 +1,7 @@
 # region imports
 from dc_sdk import errors
+import json
+import requests
 # end region imports
 
 # region class
@@ -15,11 +17,55 @@ class Connector:
     # end region init
     # region authenticate
     def authenticate(self):
-        """
-        authenticate with the connector using self.credentials, update self.credentials if credentials change
-        :return: a boolean indicating whether the connector was able to successfully authenticate
-        """
-        raise errors.NotImplementedError()
+        token_url = "https://api.hubapi.com/oauth/v1/token"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8"
+        }
+        
+        try:
+            if 'refresh_token' in self.credentials:
+                print('Using refresh token flow')
+                data = {
+                    "grant_type": "refresh_token",
+                    "client_id": self.credentials['client_id'],
+                    "client_secret": self.credentials['client_secret'],
+                    "refresh_token": self.credentials['refresh_token']
+                }
+            elif 'authorization_code' in self.credentials:
+                print('Using authorization code flow')
+                data = {
+                    "grant_type": "authorization_code",
+                    "client_id": self.credentials['client_id'],
+                    "client_secret": self.credentials['client_secret'],
+                    "redirect_uri": self.credentials['redirect_uri'],
+                    "code": self.credentials['authorization_code']
+                }
+            else:
+                return False, 'No valid authentication flow found'
+    
+            response = requests.post(token_url, headers=headers, data=data)
+            response.raise_for_status()
+            token_info = response.json()
+    
+            self.credentials['access_token'] = token_info['access_token']
+            if 'refresh_token' in token_info:
+                self.credentials['refresh_token'] = token_info['refresh_token']
+    
+            print('Authentication successful')
+            return True, token_info
+    
+        except requests.exceptions.HTTPError as errh:
+            print ("Http Error:",errh)
+            return False, str(errh)
+        except requests.exceptions.ConnectionError as errc:
+            print ("Error Connecting:",errc)
+            return False, str(errc)
+        except requests.exceptions.Timeout as errt:
+            print ("Timeout Error:",errt)
+            return False, str(errt)
+        except requests.exceptions.RequestException as err:
+            print ("Something went wrong",err)
+            return False, str(err)
     # end region authenticate
     # region get_metadata
     def get_metadata(self):
