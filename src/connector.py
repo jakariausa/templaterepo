@@ -130,131 +130,142 @@ class Connector:
         raise errors.NotImplementedError()
     # end region get_data
     # region load_data
-    # Necessary imports for PostgreSQL database operations
+    # Required imports for PostgreSQL database connection and operations
     
-    # Place the following methods inside your existing class
+    # Inside the existing class, place the load_data method and its helper methods
     
     # region load_data
     
     def load_data(self, data, object_id, m, update_method, batch_number, total_batches, credentials):
         """
-        Load data into the specified database table.
-    
-        :param data: List of dictionaries where each dictionary represents a row of data to be inserted.
-        :param object_id: The table name or identifier where the data will be loaded.
-        :param m: A mapping list of dictionaries defining the source and destination columns, their data types, and sizes.
+        Load data into the specified PostgreSQL table with different update methods.
+        
+        :param data: List of dictionaries, each representing a row of data.
+        :param object_id: The table name where the data will be loaded.
+        :param m: Mapping list defining source and destination columns, data types, and sizes.
         :param update_method: Integer flag for operation type: 0 (Append), 1 (Replace), 2 (Upsert).
         :param batch_number: The current batch index during multi-batch loading.
         :param total_batches: Total number of batches for the operation.
-        :param credentials: A dictionary with database connection details.
+        :param credentials: Dictionary with database connection details.
         """
-        connection = None
         try:
-            # Establish database connection
-            connection = psycopg2.connect(
+            # Establish the database connection
+            conn = psycopg2.connect(
                 dbname=credentials['dbname'],
                 user=credentials['user'],
                 password=credentials['password'],
                 host=credentials['host'],
                 port=credentials['port']
             )
-            cursor = connection.cursor()
-            print("Connection established.")
+            conn.autocommit = False  # Use transactions
+            cursor = conn.cursor()
+            print(f"Connection established to the database: {credentials['dbname']}")
     
-            # Check and create table if it's the first batch
+            # Check if the table exists or needs to be created
             if batch_number == 0:
                 create_table_query = self.generate_create_table_query(object_id, m)
                 cursor.execute(create_table_query)
-                connection.commit()
                 print(f"Table {object_id} checked/created.")
     
-            # Perform the specified data operation
+            # Perform the operation based on the update_method
             if update_method == 0:
                 self.append_data(cursor, object_id, data, m)
             elif update_method == 1:
                 self.replace_data(cursor, object_id, data, m)
             elif update_method == 2:
-                raise NotImplementedError("Upsert operation is not supported.")
+                raise NotImplementedError("Upsert operation is not supported yet.")
             else:
                 raise ValueError("Invalid update method specified.")
     
-            # Commit transaction
-            connection.commit()
-            print(f"Data loaded into {object_id} using method {update_method}.")
+            conn.commit()
+            print(f"Batch {batch_number + 1}/{total_batches} processed successfully.")
     
         except Exception as e:
-            if connection:
-                connection.rollback()
-            print(f"Error loading data: {e}")
+            conn.rollback()
+            print(f"Error occurred: {str(e)}")
+            raise e
+    
         finally:
             if cursor:
                 cursor.close()
-            if connection:
-                connection.close()
-            print("Connection closed.")
+            if conn:
+                conn.close()
+            print("Database connection closed.")
     
-    def generate_create_table_query(self, object_id, mapping):
+    def generate_create_table_query(self, object_id, m):
         """
-        Generate a SQL query to create a table based on the provided mapping.
-    
-        :param object_id: The table name or identifier.
-        :param mapping: A mapping list of dictionaries defining the source and destination columns, their data types, and sizes.
+        Generate a SQL query to create a table based on the mapping provided.
+        
+        :param object_id: The table name.
+        :param m: Mapping list defining source and destination columns, data types, and sizes.
         :return: SQL query string for creating the table.
         """
         column_definitions = []
-        for column in mapping:
-            col_type = column['datatype']
-            if col_type.upper() == 'VARCHAR' and column.get('size'):
-                col_type = f"VARCHAR({column['size']})"
-            elif col_type.upper() == 'INT':
-                col_type = 'INTEGER'
+        for mapping in m:
+            datatype = mapping["datatype"]
+            if datatype.upper() == "VARCHAR" and "size" in mapping:
+                datatype = f"VARCHAR({mapping['size']})"
+            elif datatype.upper() in ["INT", "INTEGER"]:
+                datatype = "INTEGER"
+            
             column_definitions.append(
-                sql.Identifier(column['destination_field_id']).as_string(psycopg2.connect()) + " " + col_type
+                sql.SQL("{} {}").format(
+                    sql.Identifier(mapping["destination_field_id"]),
+                    sql.SQL(datatype)
+                )
             )
-        columns_sql = ", ".join(column_definitions)
-        return f"CREATE TABLE IF NOT EXISTS {object_id} ({columns_sql});"
+        
+        create_table_query = sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(
+            sql.Identifier(object_id),
+            sql.SQL(", ").join(column_definitions)
+        )
+        return create_table_query
     
-    def generate_insert_query(self, object_id, mapping):
+    def generate_insert_query(self, object_id, m):
         """
-        Generate an SQL insert query dynamically based on the provided mapping.
-    
-        :param object_id: The table name or identifier.
-        :param mapping: A mapping list of dictionaries defining the source and destination columns.
-        :return: SQL query string for inserting data.
+        Generate a SQL insert query based on the mapping provided.
+        
+        :param object_id: The table name.
+        :param m: Mapping list defining source and destination columns.
+        :return: SQL insert query string.
         """
-        columns = [sql.Identifier(col['destination_field_id']).as_string(psycopg2.connect()) for col in mapping]
-        placeholders = [f"%({col['source_field_id']})s" for col in mapping]
-        columns_sql = ", ".join(columns)
-        placeholders_sql = ", ".join(placeholders)
-        return f"INSERT INTO {object_id} ({columns_sql}) VALUES ({placeholders_sql});"
+        columns = [mapping["destination_field_id"] for mapping in m]
+        placeholders = [f"%({mapping['source_field_id']})s" for mapping in m]
+        
+        insert_query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            sql.Identifier(object_id),
+            sql.SQL(", ").join(map(sql.Identifier, columns)),
+            sql.SQL(", ").join(sql.Placeholder() for _ in placeholders)
+        )
+        return insert_query
     
-    def append_data(self, cursor, object_id, data, mapping):
+    def append_data(self, cursor, object_id, data, m):
         """
-        Append data to the table using batch insertion.
-    
+        Append data to the existing table.
+        
         :param cursor: Database cursor.
-        :param object_id: The table name or identifier.
-        :param data: List of dictionaries where each dictionary represents a row of data to be inserted.
-        :param mapping: A mapping list of dictionaries defining the source and destination columns.
+        :param object_id: The table name.
+        :param data: List of dictionaries representing rows of data.
+        :param m: Mapping list defining source and destination columns.
         """
-        insert_query = self.generate_insert_query(object_id, mapping)
-        execute_batch(cursor, insert_query, data)
-        print(f"Data appended to {object_id}.")
+        insert_query = self.generate_insert_query(object_id, m)
+        execute_batch(cursor, insert_query.as_string(cursor), data)
+        print(f"Data appended to {object_id} successfully.")
     
-    def replace_data(self, cursor, object_id, data, mapping):
+    def replace_data(self, cursor, object_id, data, m):
         """
-        Replace data in the table by deleting existing data and inserting new data.
-    
+        Replace existing data in the table with new data.
+        
         :param cursor: Database cursor.
-        :param object_id: The table name or identifier.
-        :param data: List of dictionaries where each dictionary represents a row of data to be inserted.
-        :param mapping: A mapping list of dictionaries defining the source and destination columns.
+        :param object_id: The table name.
+        :param data: List of dictionaries representing rows of data.
+        :param m: Mapping list defining source and destination columns.
         """
         cursor.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(object_id)))
-        self.append_data(cursor, object_id, data, mapping)
-        print(f"Data replaced in {object_id}.")
+        print(f"Existing data in {object_id} deleted.")
+        self.append_data(cursor, object_id, data, m)
     
-    # endregion
+    # endregion load_data
     # end region load_data
     # region other_functions
     # end region other_functions
