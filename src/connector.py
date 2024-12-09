@@ -132,18 +132,18 @@ class Connector:
         raise errors.NotImplementedError()
     # end region get_data
     # region load_data
-    # Necessary imports for PostgreSQL database connector
+    # Necessary imports for PostgreSQL connection and operations
     
-    # Place the following methods inside your existing class
+    # Assuming these methods will be placed inside an existing class
+    # The `self` parameter is used to align with class method definitions
+    
+    # region load_data
     
     def load_data(self, data, object_id, m, update_method, batch_number, total_batches, credentials):
-        """
-        Load data into the specified database table with append, replace, or upsert options.
-        """
         connection = None
         cursor = None
         try:
-            # Establish connection using credentials
+            # Establishing the connection to the database
             connection = psycopg2.connect(
                 dbname=credentials['dbname'],
                 user=credentials['user'],
@@ -152,101 +152,95 @@ class Connector:
                 port=credentials['port']
             )
             cursor = connection.cursor()
+            self.log("Connection established successfully.")
     
-            # Determine if we need to create the table
+            # Transform data into list of tuples
+            data_tuples = [
+                tuple(row[mapping['source_field_id']] for mapping in m)
+                for row in data
+            ]
+    
+            # Create table if it is the first batch
             if batch_number == 0:
                 self.create_table_if_not_exists(cursor, object_id, m)
+                connection.commit()
+                self.log(f"Table '{object_id}' verified/created.")
     
-            # Transform data into a list of tuples
-            transformed_data = self.transform_data(data, m)
-    
-            # Execute the appropriate operation based on update_method
+            # Execute the appropriate update method
             if update_method == 0:
-                self.append_data(cursor, object_id, m, transformed_data)
+                self.append_data(cursor, object_id, m, data_tuples)
             elif update_method == 1:
-                self.replace_data(cursor, object_id, m, transformed_data)
+                self.replace_data(cursor, object_id, m, data_tuples)
             elif update_method == 2:
                 raise NotImplementedError("Upsert operation is not supported.")
             else:
-                raise ValueError("Invalid update_method specified.")
+                raise ValueError("Invalid update method specified.")
     
             # Commit the transaction
             connection.commit()
-            print("Data loaded successfully.")
+            self.log("Data loaded successfully.")
     
         except Exception as e:
             if connection:
                 connection.rollback()
-            print(f"An error occurred: {e}")
+            self.log(f"Error occurred: {e}")
             raise
         finally:
             if cursor:
                 cursor.close()
             if connection:
                 connection.close()
+            self.log("Connection closed.")
     
-    def create_table_if_not_exists(self, cursor, object_id, mapping):
-        """
-        Create table if it does not exist based on the mapping provided.
-        """
-        columns = []
-        for column in mapping:
-            col_def = sql.Identifier(column['destination_field_id'])
-            if column['datatype'].upper() == 'VARCHAR' and column['size']:
-                col_type = sql.SQL("VARCHAR({})").format(sql.Literal(column['size']))
-            else:
-                col_type = sql.SQL(column['datatype'].upper())
-            columns.append(sql.SQL("{} {}").format(col_def, col_type))
-        
-        query = sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(
-            sql.Identifier(object_id),
-            sql.SQL(', ').join(columns)
+    def create_table_if_not_exists(self, cursor, object_id, m):
+        columns = [
+            f"{mapping['destination_field_id']} {self.get_sql_datatype(mapping['datatype'], mapping.get('size'))}"
+            for mapping in m
+        ]
+        create_table_query = sql.SQL(
+            "CREATE TABLE IF NOT EXISTS {table} ({fields})"
+        ).format(
+            table=sql.Identifier(object_id),
+            fields=sql.SQL(', ').join(sql.SQL(column) for column in columns)
         )
-        cursor.execute(query)
+        cursor.execute(create_table_query)
+        self.log(f"Create table query executed: {create_table_query.as_string(cursor)}")
     
-    def transform_data(self, data, mapping):
-        """
-        Transform data into a list of tuples according to the mapping.
-        """
-        transformed_data = []
-        for row in data:
-            transformed_row = tuple(row[col['source_field_id']] for col in mapping)
-            transformed_data.append(transformed_row)
-        return transformed_data
+    def get_sql_datatype(self, datatype, size=None):
+        if datatype.upper() == "VARCHAR" and size:
+            return f"VARCHAR({size})"
+        elif datatype.upper() in ["INT", "INTEGER"]:
+            return "INTEGER"
+        else:
+            return datatype.upper()
     
-    def generate_insert_query(self, object_id, mapping):
-        """
-        Generate a dynamic insert query based on the mapping.
-        """
-        columns = [sql.Identifier(col['destination_field_id']) for col in mapping]
-        placeholders = [sql.Placeholder() for _ in mapping]
-        
-        query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
-            sql.Identifier(object_id),
-            sql.SQL(', ').join(columns),
-            sql.SQL(', ').join(placeholders)
+    def generate_insert_query(self, object_id, m):
+        columns = [mapping['destination_field_id'] for mapping in m]
+        placeholders = [sql.Placeholder() for _ in columns]
+        insert_query = sql.SQL(
+            "INSERT INTO {table} ({fields}) VALUES ({values})"
+        ).format(
+            table=sql.Identifier(object_id),
+            fields=sql.SQL(', ').join(map(sql.Identifier, columns)),
+            values=sql.SQL(', ').join(placeholders)
         )
-        return query
+        return insert_query
     
-    def append_data(self, cursor, object_id, mapping, data):
-        """
-        Append data to the table using batch insertion.
-        """
-        query = self.generate_insert_query(object_id, mapping)
-        execute_batch(cursor, query, data)
-        print("Data appended successfully.")
+    def append_data(self, cursor, object_id, m, data_tuples):
+        insert_query = self.generate_insert_query(object_id, m)
+        execute_batch(cursor, insert_query, data_tuples)
+        self.log(f"Data appended to table '{object_id}'.")
     
-    def replace_data(self, cursor, object_id, mapping, data):
-        """
-        Replace data in the table by deleting existing data and inserting new data.
-        """
+    def replace_data(self, cursor, object_id, m, data_tuples):
         # Delete existing data
-        delete_query = sql.SQL("DELETE FROM {}").format(sql.Identifier(object_id))
+        delete_query = sql.SQL("DELETE FROM {table}").format(table=sql.Identifier(object_id))
         cursor.execute(delete_query)
+        self.log(f"Existing data deleted from table '{object_id}'.")
     
         # Insert new data
-        self.append_data(cursor, object_id, mapping, data)
-        print("Data replaced successfully.")
+        self.append_data(cursor, object_id, m, data_tuples)
+    
+    # endregion
     # end region load_data
     # region other_functions
     # end region other_functions
