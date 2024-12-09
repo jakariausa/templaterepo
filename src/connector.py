@@ -1,9 +1,12 @@
 # region imports
 from dc_sdk import errors
+from mysql.connector import Error
+from mysql.connector import errorcode
 from psycopg2 import extras
 from psycopg2 import sql
 from psycopg2.extras import execute_batch
 import logging
+import mysql.connector
 import psycopg2
 # end region imports
 
@@ -132,115 +135,119 @@ class Connector:
         raise errors.NotImplementedError()
     # end region get_data
     # region load_data
-    # Necessary imports for PostgreSQL connection and operations
+    # Necessary imports for the MySQL database connector
     
-    # Assuming these methods will be placed inside an existing class
-    # The `self` parameter is used to align with class method definitions
+    # Inside your existing class, place the following methods
     
     # region load_data
     
     def load_data(self, data, object_id, m, update_method, batch_number, total_batches, credentials):
+        """
+        Load data into the specified database table (object_id).
+        """
         connection = None
         cursor = None
+        
         try:
-            # Establishing the connection to the database
-            connection = psycopg2.connect(
-                dbname=credentials['dbname'],
+            # Establish the connection using credentials
+            connection = mysql.connector.connect(
+                host=credentials['host'],
+                database=credentials['dbname'],
                 user=credentials['user'],
                 password=credentials['password'],
-                host=credentials['host'],
-                port=credentials['port']
+                port=credentials.get('port', 3306)
             )
             cursor = connection.cursor()
-            self.log("Connection established successfully.")
     
-            # Transform data into list of tuples
-            data_tuples = [
-                tuple(row[mapping['source_field_id']] for mapping in m)
-                for row in data
-            ]
+            # Log connection establishment
+            print(f"Connection established to database: {credentials['dbname']}")
     
-            # Create table if it is the first batch
+            # Check and create table if it doesn't exist, only for the first batch
             if batch_number == 0:
                 self.create_table_if_not_exists(cursor, object_id, m)
-                connection.commit()
-                self.log(f"Table '{object_id}' verified/created.")
     
-            # Execute the appropriate update method
+            # Transform data into tuples based on the mapping
+            transformed_data = self.transform_data(data, m)
+    
+            # Perform the data loading operation based on update_method
             if update_method == 0:
-                self.append_data(cursor, object_id, m, data_tuples)
+                self.append_data(cursor, object_id, transformed_data, m)
             elif update_method == 1:
-                self.replace_data(cursor, object_id, m, data_tuples)
+                self.replace_data(cursor, object_id, transformed_data, m)
             elif update_method == 2:
-                raise NotImplementedError("Upsert operation is not supported.")
+                raise NotImplementedError("Upsert operation is not supported for MySQL.")
             else:
                 raise ValueError("Invalid update method specified.")
     
             # Commit the transaction
             connection.commit()
-            self.log("Data loaded successfully.")
+            print(f"Data loaded successfully into {object_id} using method {update_method}")
     
-        except Exception as e:
+        except Error as e:
             if connection:
                 connection.rollback()
-            self.log(f"Error occurred: {e}")
+            print(f"An error occurred: {str(e)}")
             raise
+    
         finally:
+            # Ensure the cursor and connection are closed
             if cursor:
                 cursor.close()
             if connection:
                 connection.close()
-            self.log("Connection closed.")
+            print("Connection closed.")
     
     def create_table_if_not_exists(self, cursor, object_id, m):
-        columns = [
-            f"{mapping['destination_field_id']} {self.get_sql_datatype(mapping['datatype'], mapping.get('size'))}"
-            for mapping in m
-        ]
-        create_table_query = sql.SQL(
-            "CREATE TABLE IF NOT EXISTS {table} ({fields})"
-        ).format(
-            table=sql.Identifier(object_id),
-            fields=sql.SQL(', ').join(sql.SQL(column) for column in columns)
-        )
+        """
+        Create the table if it does not exist, using the mapping to define columns.
+        """
+        columns = []
+        for mapping in m:
+            col_def = f"{mapping['destination_field_id']} {mapping['datatype']}"
+            if mapping['datatype'].upper() == 'VARCHAR' and mapping.get('size'):
+                col_def += f"({mapping['size']})"
+            columns.append(col_def)
+        columns_def = ", ".join(columns)
+        create_table_query = f"CREATE TABLE IF NOT EXISTS {object_id} ({columns_def})"
         cursor.execute(create_table_query)
-        self.log(f"Create table query executed: {create_table_query.as_string(cursor)}")
+        print(f"Table {object_id} checked/created.")
     
-    def get_sql_datatype(self, datatype, size=None):
-        if datatype.upper() == "VARCHAR" and size:
-            return f"VARCHAR({size})"
-        elif datatype.upper() in ["INT", "INTEGER"]:
-            return "INTEGER"
-        else:
-            return datatype.upper()
+    def transform_data(self, data, m):
+        """
+        Transform the list of dictionaries into a list of tuples based on the column mapping.
+        """
+        transformed_data = []
+        for row in data:
+            row_tuple = tuple(row[mapping['source_field_id']] for mapping in m)
+            transformed_data.append(row_tuple)
+        return transformed_data
+    
+    def append_data(self, cursor, object_id, transformed_data, m):
+        """
+        Append data to the table using batch inserts.
+        """
+        insert_query = self.generate_insert_query(object_id, m)
+        cursor.executemany(insert_query, transformed_data)
+        print(f"Data appended to {object_id}.")
+    
+    def replace_data(self, cursor, object_id, transformed_data, m):
+        """
+        Replace data in the table by deleting existing data and inserting new data.
+        """
+        cursor.execute(f"DELETE FROM {object_id}")
+        print(f"Existing data in {object_id} deleted.")
+        self.append_data(cursor, object_id, transformed_data, m)
     
     def generate_insert_query(self, object_id, m):
-        columns = [mapping['destination_field_id'] for mapping in m]
-        placeholders = [sql.Placeholder() for _ in columns]
-        insert_query = sql.SQL(
-            "INSERT INTO {table} ({fields}) VALUES ({values})"
-        ).format(
-            table=sql.Identifier(object_id),
-            fields=sql.SQL(', ').join(map(sql.Identifier, columns)),
-            values=sql.SQL(', ').join(placeholders)
-        )
+        """
+        Generate an insert query dynamically based on the provided mapping.
+        """
+        columns = ", ".join(mapping['destination_field_id'] for mapping in m)
+        placeholders = ", ".join(["%s"] * len(m))
+        insert_query = f"INSERT INTO {object_id} ({columns}) VALUES ({placeholders})"
         return insert_query
     
-    def append_data(self, cursor, object_id, m, data_tuples):
-        insert_query = self.generate_insert_query(object_id, m)
-        execute_batch(cursor, insert_query, data_tuples)
-        self.log(f"Data appended to table '{object_id}'.")
-    
-    def replace_data(self, cursor, object_id, m, data_tuples):
-        # Delete existing data
-        delete_query = sql.SQL("DELETE FROM {table}").format(table=sql.Identifier(object_id))
-        cursor.execute(delete_query)
-        self.log(f"Existing data deleted from table '{object_id}'.")
-    
-        # Insert new data
-        self.append_data(cursor, object_id, m, data_tuples)
-    
-    # endregion
+    # endregion load_data
     # end region load_data
     # region other_functions
     # end region other_functions
