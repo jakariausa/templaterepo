@@ -2,6 +2,7 @@
 from dc_sdk import errors
 from mysql.connector import Error
 from mysql.connector import errorcode
+from psycopg2 import OperationalError
 from psycopg2 import extras
 from psycopg2 import sql
 from psycopg2.extras import execute_batch
@@ -22,12 +23,36 @@ class Connector:
         self.batch_size = None
     # end region init
     # region authenticate
+    class AuthenticationError(Exception):
+        """Custom exception for authentication errors."""
+        pass
+    
     def authenticate(self):
-        """
-        authenticate with the connector using self.credentials, update self.credentials if credentials change
-        :return: a boolean indicating whether the connector was able to successfully authenticate
-        """
-        raise errors.NotImplementedError()
+        """Establish and validate a connection to a PostgreSQL database."""
+        try:
+            # Extract credentials from the instance's attributes
+            username = self.credentials.get('username')
+            password = self.credentials.get('password')
+            server = self.credentials.get('server')
+            database = self.credentials.get('database')
+            
+            # Establish the connection
+            self.connection = psycopg2.connect(
+                user=username,
+                password=password,
+                host=server,
+                database=database,
+                connect_timeout=50  # Set the timeout to 50 seconds
+            )
+            
+            # Log successful connection
+            logging.info("Connection established successfully.")
+            return True
+    
+        except OperationalError as e:
+            # Log the error and raise a custom AuthenticationError
+            logging.error("Authentication failed: %s", e)
+            raise AuthenticationError(f"Authentication failed: {e}")
     # end region authenticate
     # region get_metadata
     def get_metadata(self):
