@@ -23,36 +23,50 @@ class Connector:
         self.batch_size = None
     # end region init
     # region authenticate
-    class AuthenticationError(Exception):
-        """Custom exception for authentication errors."""
-        pass
-    
     def authenticate(self):
-        """Establish and validate a connection to a PostgreSQL database."""
+        """
+        Establish and validate a connection to a PostgreSQL database using the provided credentials.
+        
+        Returns:
+            bool: True if the connection is successfully established.
+        
+        Raises:
+            Exception: If the connection fails, raises an error with details.
+        """
+        import psycopg2
+        from psycopg2 import OperationalError
+        import logging
+    
+        # Configure logging
+        logging.basicConfig(level=logging.INFO)
+        
+        # Extract credentials from the instance
+        username = self.credentials.get('username')
+        password = self.credentials.get('password')
+        server = self.credentials.get('server')
+        database = self.credentials.get('database')
+        
         try:
-            # Extract credentials from the instance's attributes
-            username = self.credentials.get('username')
-            password = self.credentials.get('password')
-            server = self.credentials.get('server')
-            database = self.credentials.get('database')
-            
-            # Establish the connection
+            # Attempt to establish a connection to the PostgreSQL database
             self.connection = psycopg2.connect(
+                dbname=database,
                 user=username,
                 password=password,
                 host=server,
-                database=database,
-                connect_timeout=50  # Set the timeout to 50 seconds
+                connect_timeout=60  # Set the connection timeout to 60 seconds
             )
             
-            # Log successful connection
+            # Log success message
             logging.info("Connection established successfully.")
+            
             return True
-    
+        
         except OperationalError as e:
-            # Log the error and raise a custom AuthenticationError
+            # Log error message
             logging.error("Authentication failed: %s", e)
-            raise AuthenticationError(f"Authentication failed: {e}")
+            
+            # Raise an exception with a detailed error message
+            raise Exception(f"Failed to connect to the database: {e}")
     # end region authenticate
     # region get_metadata
     def get_metadata(self):
